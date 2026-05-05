@@ -1,0 +1,95 @@
+"""Unit tests for metrics."""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.metrics import (
+    cagr, annualized_volatility, sharpe_ratio, max_drawdown,
+    calmar_ratio, win_rate, profit_factor, avg_win_loss_ratio, summary
+)
+
+
+@pytest.fixture
+def flat_equity():
+    return pd.Series([10000.0] * 252)
+
+
+@pytest.fixture
+def doubling_equity():
+    return pd.Series(np.linspace(10000, 20000, 253))
+
+
+@pytest.fixture
+def sample_trades():
+    return pd.DataFrame({"pnl": [100, -50, 200, -100, 50, -25, 150]})
+
+
+def test_cagr_flat(flat_equity):
+    assert cagr(flat_equity) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_cagr_doubling(doubling_equity):
+    assert cagr(doubling_equity) == pytest.approx(1.0, abs=0.01)
+
+
+def test_cagr_empty():
+    assert cagr(pd.Series([])) == 0.0
+
+
+def test_max_drawdown_no_dd(flat_equity):
+    assert max_drawdown(flat_equity) == pytest.approx(0.0)
+
+
+def test_max_drawdown_50pct():
+    eq = pd.Series([100, 200, 100])
+    assert max_drawdown(eq) == pytest.approx(-0.5)
+
+
+def test_sharpe_constant_returns():
+    returns = pd.Series([0.001] * 252)
+    assert sharpe_ratio(returns) == 0.0
+
+
+def test_annualized_vol_zero():
+    returns = pd.Series([0.0] * 252)
+    assert annualized_volatility(returns) == 0.0
+
+
+def test_win_rate(sample_trades):
+    assert win_rate(sample_trades) == pytest.approx(4 / 7)
+
+
+def test_win_rate_empty():
+    assert win_rate(pd.DataFrame({"pnl": []})) == 0.0
+
+
+def test_profit_factor(sample_trades):
+    assert profit_factor(sample_trades) == pytest.approx(500 / 175)
+
+
+def test_profit_factor_no_losses():
+    trades = pd.DataFrame({"pnl": [100, 50]})
+    assert profit_factor(trades) == float("inf")
+
+
+def test_avg_win_loss_ratio(sample_trades):
+    avg_win = (100 + 200 + 50 + 150) / 4
+    avg_loss = (50 + 100 + 25) / 3
+    assert avg_win_loss_ratio(sample_trades) == pytest.approx(avg_win / avg_loss)
+
+
+def test_calmar_zero_dd(flat_equity):
+    assert calmar_ratio(flat_equity) == 0.0
+
+
+def test_summary_keys(doubling_equity, sample_trades):
+    s = summary(doubling_equity, sample_trades)
+    expected = {"cagr", "annualized_vol", "sharpe", "max_drawdown", "calmar",
+                "n_trades", "win_rate", "profit_factor", "avg_win_loss_ratio",
+                "final_equity", "total_return"}
+    assert set(s.keys()) == expected

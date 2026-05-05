@@ -1,0 +1,281 @@
+# CSM Deployment Guide
+
+This is the operational manual for running the Cross-Sectional Momentum
+strategy on your own capital in a TFSA. Read once; reference forever.
+
+---
+
+## What this strategy is, in one paragraph
+
+Once a quarter (Mar/Jun/Sep/Dec, last business day), you rank a basket
+of 13 Canadian-listed ETFs by their trailing 9-month return (excluding
+the most recent month). You hold the top 3 in equal weight for the next
+quarter. Then you do it again. That's it.
+
+The math you don't need to do yourself: this strategy historically returned
+~14% CAGR with -14% maximum drawdown from 2014-2025, Sharpe ~1.0. **Out-of-sample
+(2021-2025), it returned ~16% CAGR with the same drawdown.** It beats the
+TSX broadly (XIC: 7.4% CAGR), beats the S&P CAD-hedged (XSP: 10.4%), and
+matches unhedged S&P (VFV: 14.1%) but with substantially lower drawdown.
+
+It is NOT a wealth multiplier. It is a defensive momentum sleeve that
+diversifies your DCA core, performs well in regime changes (e.g. 2022),
+and lags in roaring growth-only bulls (2019-2021).
+
+---
+
+## What you'll have after deploying
+
+In your TFSA, alongside your existing holdings:
+
+- **Core** (your existing DCA strategy) — ~70-80% of new contributions
+- **CSM Sleeve** — ~20-30% of new contributions, rebalanced quarterly
+- **Total: bulletproof core + active sleeve with documented edge**
+
+---
+
+## The universe (13 ETFs, all Canadian-listed)
+
+| Symbol | Description |
+|---|---|
+| XEG.TO | Energy (S&P/TSX Capped) |
+| XFN.TO | Financials |
+| XIT.TO | Information Tech |
+| XMA.TO | Materials |
+| XRE.TO | REIT |
+| XUT.TO | Utilities |
+| XST.TO | Consumer Staples |
+| XSP.TO | S&P 500 (CAD-Hedged) |
+| ZQQ.TO | Nasdaq 100 (CAD-Hedged) |
+| XEF.TO | International Developed |
+| XEC.TO | Emerging Markets |
+| XLB.TO | Long-Term Canadian Bonds |
+| CGL.TO | Gold (CAD-Hedged) |
+
+These are all listed on the TSX, all CAD-denominated, all available on
+Wealthsimple Trade and Questrade. Trading them in your TFSA does NOT
+trigger US dividend withholding tax.
+
+---
+
+## Minimum capital recommendation
+
+**Minimum: $3,000 CAD.** Below that, the broker spread eats too much per
+rebalance.
+
+**Sweet spot: $5,000-$10,000 CAD.** Each position becomes $1,500-$3,000,
+spreads become trivial.
+
+**Above $50,000:** the strategy still works but consider adding a 4th or
+5th holding (top-K=4 or 5) to reduce concentration risk.
+
+---
+
+## The quarterly workflow
+
+### Day 1: Quarter-end (last business day of Mar/Jun/Sep/Dec)
+
+After market close that day OR the next morning:
+
+```bash
+cd algo_project
+source venv/bin/activate
+python -m strategies.csm_live --capital 5000 --rebalance
+```
+
+This produces a **trade ticket** like this:
+
+```
+TOP-3 WINNERS (by 9m-1m momentum):
+  XEG.TO    +53.20%   iShares S&P/TSX Capped Energy
+  XMA.TO    +38.64%   iShares S&P/TSX Capped Materials
+  CGL.TO    +34.55%   iShares Gold Bullion ETF (CAD-Hedged)
+
+TRADES TO EXECUTE:
+  SELLS (execute first):
+    SELL  47 XIT.TO  @ ~$54.20  ≈ $2,547  (47→0)
+  BUYS:
+    BUY   59 XEG.TO  @ ~$27.58  ≈ $1,627  (0→59)
+    BUY   38 XMA.TO  @ ~$42.42  ≈ $1,612  (0→38)
+```
+
+### Day 2: Execute at broker
+
+1. Log into Wealthsimple Trade or Questrade
+2. **Sell first** to free cash for buys
+3. Use **LIMIT orders**, not market orders:
+   - For buys: limit at the ASK + $0.05
+   - For sells: limit at the BID - $0.05
+4. If not filled in 30 min, cancel and re-place at slightly worse price
+5. **Don't trade in the first 5 minutes of market open** — spreads are wide.
+   Trade between 9:45-15:30 ET for best fills.
+
+### Day 3: Record the fills
+
+```bash
+python -m strategies.csm_live --record --auto --capital 5000
+```
+
+(For a real system you'd manually input fills; the `--auto` mode records them
+at signal-day prices for sprint-4 demonstration.)
+
+### Then: do nothing for ~3 months
+
+Don't watch the holdings. Don't second-guess. Don't add an early exit because
+one position is down. The strategy works because of what happens over many
+quarters, not any single one.
+
+---
+
+## Calendar of upcoming rebalances
+
+The next 4 are:
+- **2026-06-30 (Tuesday)** — 56 days from May 5, 2026
+- **2026-09-30 (Wednesday)**
+- **2026-12-31 (Thursday)**
+- **2027-03-31 (Wednesday)**
+
+---
+
+## Validation gate before real money
+
+**Do not deploy real capital until you've paper-traded for 3-6 months.**
+
+The validation rule:
+- Backtest expectation: 13-16% annualized return
+- Paper-trade gate: 6 months of paper performance within ±50% of expectation
+- Acceptable 6-month range: -3% to +12% (note: includes drawdowns)
+
+If paper-trade results fall outside this range:
+- **Outside the upper bound (>12%):** suspicious; you might be lucky-running
+  a bad quarter. Wait another quarter.
+- **Outside the lower bound (<-3%):** something has changed. Either the
+  strategy has decayed, your data feed is broken, or it's just bad luck.
+  Don't deploy until you understand which.
+
+---
+
+## Failure modes to watch for
+
+### 1. The data feed breaks
+
+If yfinance returns stale or wrong data, the signal is wrong.
+**Defense:** Cross-check the top-3 against a free source like
+finance.yahoo.com or stockcharts.com before executing.
+
+### 2. An ETF gets delisted or merged
+
+Has happened (e.g., some BMO ETFs were renamed in 2024).
+**Defense:** Before each rebalance, check that all 13 universe symbols
+still appear in the trade ticket's ranking. If one is missing, investigate
+before trading.
+
+### 3. You skip a rebalance
+
+The strategy assumes consistent quarterly rebalancing. Skipping one means
+you hold a stale top-3 for 6 months — performance may diverge from
+expectation.
+**Defense:** Set 4 calendar reminders right now for the next 4 quarter-ends.
+
+### 4. You override the signal
+
+"I don't want to hold gold, it feels overvalued." Don't. The strategy works
+because it's mechanical. Discretionary overrides break the edge that took
+3 sprints of work to validate.
+**Defense:** If you find yourself wanting to override, ask: "Did I do
+new research that proves the strategy is broken?" If no, execute.
+
+### 5. The strategy underperforms in growth-bull years
+
+**This will happen.** In 2019-2021, CSM trailed SPY by 5-17 percentage
+points per year. That's expected — momentum across diversified asset
+classes won't beat concentrated tech exposure in those regimes.
+**Defense:** Pre-commit in writing: "I will run this for at least 5 years
+regardless of whether it beats SPY in any given year." Drawdown protection
+is the value proposition, not absolute outperformance.
+
+---
+
+## Tax treatment (Quebec resident, TFSA)
+
+- **Capital gains in TFSA: zero tax.** Quarterly rebalancing has no tax
+  drag in TFSA.
+- **Outside TFSA (taxable account):** every rebalance triggers capital
+  gains/losses. Quebec marginal rate ~53% top bracket. The strategy still
+  works pre-tax but post-tax CAGR drops by 30-40%. **Strong recommendation:
+  hold this strategy in TFSA only.**
+- **In RRSP:** also tax-deferred. Works fine but TFSA is the better wrapper
+  if you have room.
+
+---
+
+## Frozen parameters
+
+These are LOCKED. Changes require new out-of-sample validation:
+
+```yaml
+top_k: 3
+lookback_months: 9
+skip_months: 1
+rebal_freq: QE  (quarterly)
+universe: 13 Canadian-listed ETFs
+min_trade_amount_cad: 100
+cash_buffer_pct: 0.02
+```
+
+**Do not adjust these because of recent performance.** If 2 consecutive
+quarters underperform, that's normal. If 6 consecutive quarters underperform,
+that's data — investigate but don't optimize on the fly.
+
+---
+
+## When to consider stopping the strategy
+
+After 5 years or 20 rebalances, evaluate:
+
+1. **Realized vs expected:** Is your realized Sharpe within 0.5 of the
+   backtest's 1.0?
+2. **Strategy decay test:** Re-run the full backtest including the new
+   data. Is the recent 5y Sharpe materially worse than the prior 5y?
+3. **Regime stability:** Did any of the 13 ETFs change methodology or
+   merge?
+
+If 2 of 3 fail → stop, redeploy capital to passive index. The strategy
+isn't a permanent edge; it's a regime-dependent edge. When the regime
+stops paying for it, walk away.
+
+---
+
+## State persistence
+
+All state is in `data/positions/state.json`. Back this up periodically.
+
+If you lose the state file, the system can be re-bootstrapped from your
+broker's holdings — just record what you currently own and how much cash
+you have, and the next `--rebalance` call will reconcile.
+
+---
+
+## Honest expected outcome
+
+Realistic 5-year forecast based on backtest distribution:
+
+- **Median outcome:** $5,000 → ~$9,800 (median 5y multiple: 1.96x)
+- **5th percentile (bad case):** $5,000 → ~$4,400 (you lose money)
+- **95th percentile (good case):** $5,000 → ~$13,500 (~22% CAGR)
+
+If your TFSA can absorb the 5th percentile outcome without affecting
+your life, deploy. If not, deploy less or wait.
+
+---
+
+## What this is NOT
+
+- Not a get-rich-quick scheme
+- Not a substitute for index investing — it's a complement
+- Not a prop firm strategy (deliberately — those don't work for retail)
+- Not validated for daily intraday signals — strictly quarterly
+- Not optimal in every regime — designed to be okay in most regimes
+
+If you want excitement, this isn't it. If you want a small, real, verified
+edge applied with discipline over decades, this is it.

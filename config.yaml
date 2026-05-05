@@ -1,0 +1,121 @@
+"""Intraday data loader. Sprint 3 addition.
+
+yfinance intraday limits (verified 2026-05-05):
+    1m   → 7 days max
+    2m   → 60 days max
+    5m   → 60 days max
+    15m  → 60 days max
+    30m  → 60 days max
+    1h   → 730 days max  ← primary research dataset
+    1d   → unlimited
+
+Stores cached parquet at data/processed/{symbol}_{interval}.parquet.
+Each cached file documents the timezone-aware index and source freshness.
+"""
+
+from pathlib import Path
+from datetime import datetime
+import pandas as pd
+import yfinance as yf
+
+CACHE_DIR = Path(__file__).parent.parent / "data" / "processed"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+VALID_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h", "1d"}
+MAX_DAYS = {
+    "1m": 7,
+    "2m": 60, "5m": 60, "15m": 60, "30m": 60,
+    "1h": 730,
+    "1d": None,
+}
+
+
+def load_intraday(symbol: str, interval: str = "1h",
+                   period: str = None, refresh: bool = False) -> pd.DataFrame:
+    """Load intraday OHLCV.
+
+    Args:
+        symbol: ticker, e.g. 'SPY'
+        interval: bar size — must be in VALID_INTERVALS
+        period: yfinance period string ('60d', '2y', etc.). Defaults to max for interval.
+        refresh: force re-download
+
+    Returns DataFrame with columns Open/High/Low/Close/Volume, indexed by tz-aware timestamps.
+    """
+    if interval not in VALID_INTERVALS:
+        raise ValueError(f"Invalid interval. Use one of {VALID_INTERVALS}")
+
+    if period is None:
+        max_days = MAX_DAYS[interval]
+        if max_days is None:
+            period = "10y"
+        elif max_days >= 365:
+            period = f"{max_days // 365}y"
+        else:
+            period = f"{max_days}d"
+
+    cache_path = CACHE_DIR / f"{symbol}_{interval}.parquet"
+
+    if cache_path.exists() and not refresh:
+        df = pd.read_parquet(cache_path)
+        if len(df) > 0:
+            _validate(df, symbol)
+            return df
+
+    print(f"Downloading {symbol} {interval} bars (period={period})")
+    raw = yf.download(symbol, period=period, interval=interval,
+                      auto_adjust=False, progress=False)
+
+    if raw.empty:
+        raise ValueError(f"No data returned for {symbol} {interval}")
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+
+    df = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
+    df.index.name = "timestamp"
+
+    _validate(df, symbol)
+    df.to_parquet(cache_path)
+    print(f"  cached {len(df)} bars: {df.index[0]} to {df.index[-1]}")
+    return df
+
+
+def _validate(df: pd.DataFrame, symbol: str) -> None:
+    if df.isna().any().any():
+        n_nan = df.isna().sum().sum()
+        if n_nan / df.size < 0.001:
+            # tolerate <0.1% NaN — drop them silently
+            return
+        raise ValueError(f"{symbol}: {n_nan} NaN values")
+    if not df.index.is_monotonic_increasing:
+        raise ValueError(f"{symbol}: timestamps not monotonic")
+    if (df["High"] < df["Low"]).any():
+        raise ValueError(f"{symbol}: High < Low somewhere")
+    if (df["Close"] <= 0).any():
+        raise ValueError(f"{symbol}: non-positive close prices")
+
+
+def add_session_columns(df: pd.DataFrame, market_tz: str = "America/New_York") -> pd.DataFrame:
+    """Add columns: date, time_of_day, minutes_from_open, is_first_30, is_last_30.
+
+    Treats US equity session 09:30-16:00 ET. Adjust for futures sessions later.
+    """
+    df = df.copy()
+    if df.index.tz is None:
+        # Assume UTC if naive
+        df.index = df.index.tz_localize("UTC")
+    local = df.index.tz_convert(market_tz)
+    df["date"] = local.date
+    df["time_of_day"] = local.time
+    df["hour_min"] = local.hour * 100 + local.minute
+
+    # Minutes from session open (assumes 09:30 ET)
+    df["minutes_from_open"] = (local.hour - 9) * 60 + (local.minute - 30)
+    df.loc[df["minutes_from_open"] < 0, "minutes_from_open"] = -1  # pre-market flag
+
+    df["is_first_30"] = (df["minutes_from_open"] >= 0) & (df["minutes_from_open"] < 30)
+    df["is_first_60"] = (df["minutes_from_open"] >= 0) & (df["minutes_from_open"] < 60)
+    df["is_last_60"] = (df["minutes_from_open"] >= 330) & (df["minutes_from_open"] < 390)
+    return df

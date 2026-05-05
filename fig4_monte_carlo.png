@@ -1,0 +1,107 @@
+"""Tests for the live deployment module."""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pytest
+import pandas as pd
+from strategies.csm_live import (
+    is_rebalance_due, generate_trade_ticket, PARAMS
+)
+
+
+def test_rebalance_due_no_history():
+    """No prior rebalance → rebalance is always due."""
+    assert is_rebalance_due(None) is True
+
+
+def test_rebalance_due_same_quarter():
+    """Same quarter as last rebal → not due yet."""
+    last = pd.Timestamp("2026-03-15")
+    as_of = pd.Timestamp("2026-03-30")
+    assert is_rebalance_due(last, as_of) is False
+
+
+def test_rebalance_due_new_quarter():
+    """New quarter → due."""
+    last = pd.Timestamp("2026-03-30")
+    as_of = pd.Timestamp("2026-04-01")
+    assert is_rebalance_due(last, as_of) is True
+
+
+def test_rebalance_due_year_boundary():
+    """Crossing year (Q4 → Q1)."""
+    last = pd.Timestamp("2025-12-30")
+    as_of = pd.Timestamp("2026-01-02")
+    assert is_rebalance_due(last, as_of) is True
+
+
+def test_trade_ticket_initial_buy():
+    """No current holdings, fresh deploy of $5k → 3 buys."""
+    signal = {
+        "winners": pd.Series({"XEG.TO": 0.5, "XMA.TO": 0.4, "CGL.TO": 0.3}),
+        "current_prices": pd.Series({"XEG.TO": 27.50, "XMA.TO": 42.00,
+                                       "CGL.TO": 34.00, "XIT.TO": 50.0}),
+    }
+    actions, target = generate_trade_ticket(
+        target_capital_cad=5000, current_holdings={},
+        cash_cad=5000, signal=signal
+    )
+    # Each position should target ~ $5000 * (1 - 0.02) / 3 ≈ $1633
+    assert len([a for a in actions if a["action"] == "BUY"]) == 3
+    assert len([a for a in actions if a["action"] == "SELL"]) == 0
+
+
+def test_trade_ticket_partial_overlap():
+    """Already hold one of the new winners → just rotate the other two."""
+    signal = {
+        "winners": pd.Series({"XEG.TO": 0.5, "XMA.TO": 0.4, "CGL.TO": 0.3}),
+        "current_prices": pd.Series({"XEG.TO": 27.50, "XMA.TO": 42.00,
+                                       "CGL.TO": 34.00, "XIT.TO": 50.0,
+                                       "XFN.TO": 30.0}),
+    }
+    # Currently hold XEG (one of new winners), XIT and XFN (not in new winners)
+    current = {"XEG.TO": 60, "XIT.TO": 30, "XFN.TO": 50}
+    actions, target = generate_trade_ticket(
+        target_capital_cad=5000, current_holdings=current,
+        cash_cad=0, signal=signal
+    )
+    # Should sell XIT, XFN and buy XMA, CGL. May adjust XEG quantity.
+    sell_syms = [a["sym"] for a in actions if a["action"] == "SELL"]
+    buy_syms = [a["sym"] for a in actions if a["action"] == "BUY"]
+    assert "XIT.TO" in sell_syms
+    assert "XFN.TO" in sell_syms
+    assert "XMA.TO" in buy_syms
+    assert "CGL.TO" in buy_syms
+
+
+def test_trade_ticket_no_change():
+    """Already hold the right top-3 at the right size → no trades."""
+    signal = {
+        "winners": pd.Series({"XEG.TO": 0.5, "XMA.TO": 0.4, "CGL.TO": 0.3}),
+        "current_prices": pd.Series({"XEG.TO": 27.50, "XMA.TO": 42.00,
+                                       "CGL.TO": 34.00}),
+    }
+    # Holdings exactly match target sizing
+    target_per_pos = 5000 * 0.98 / 3
+    current = {
+        "XEG.TO": int(target_per_pos / 27.50),
+        "XMA.TO": int(target_per_pos / 42.00),
+        "CGL.TO": int(target_per_pos / 34.00),
+    }
+    actions, _ = generate_trade_ticket(
+        target_capital_cad=5000, current_holdings=current,
+        cash_cad=0, signal=signal
+    )
+    # All actions should be empty (or below dust threshold)
+    assert len(actions) == 0
+
+
+def test_params_frozen():
+    """Sanity check that production params are what we validated."""
+    assert PARAMS["top_k"] == 3
+    assert PARAMS["lookback_months"] == 9
+    assert PARAMS["skip_months"] == 1
+    assert PARAMS["rebal_freq"] == "QE"
+    assert len(PARAMS["universe"]) == 13

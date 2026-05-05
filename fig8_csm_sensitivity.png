@@ -1,0 +1,65 @@
+"""Unit tests for RiskManager."""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pytest
+import pandas as pd
+from src.risk import RiskManager
+
+
+def test_init_rejects_negative_equity():
+    with pytest.raises(ValueError):
+        RiskManager(account_equity=-100)
+
+
+def test_init_rejects_invalid_risk():
+    with pytest.raises(ValueError):
+        RiskManager(account_equity=10000, max_risk_per_trade=0)
+    with pytest.raises(ValueError):
+        RiskManager(account_equity=10000, max_risk_per_trade=1.5)
+
+
+def test_position_sizing_basic():
+    rm = RiskManager(account_equity=10000, max_risk_per_trade=0.004)
+    assert rm.calculate_shares(entry_price=100, stop_price=99) == 40
+
+
+def test_position_sizing_zero_distance():
+    rm = RiskManager(account_equity=10000)
+    assert rm.calculate_shares(100, 100) == 0
+
+
+def test_position_sizing_invalid_prices():
+    rm = RiskManager(account_equity=10000)
+    assert rm.calculate_shares(0, 99) == 0
+    assert rm.calculate_shares(100, 0) == 0
+    assert rm.calculate_shares(-100, 99) == 0
+
+
+def test_daily_loss_continue():
+    rm = RiskManager(account_equity=10000, daily_loss_hard_stop=-0.025)
+    assert rm.daily_loss_check(-0.01) == "continue"
+
+
+def test_daily_loss_halt():
+    rm = RiskManager(account_equity=10000, daily_loss_hard_stop=-0.025)
+    assert rm.daily_loss_check(-0.03) == "halt"
+
+
+def test_drawdown_within_limits():
+    rm = RiskManager(account_equity=10000, max_drawdown_kill=0.10)
+    eq = pd.Series([100, 105, 102])
+    assert rm.drawdown_check(eq) is True
+
+
+def test_drawdown_exceeds_limits():
+    rm = RiskManager(account_equity=10000, max_drawdown_kill=0.10)
+    eq = pd.Series([100, 105, 90])
+    assert rm.drawdown_check(eq) is False
+
+
+def test_drawdown_short_series():
+    rm = RiskManager(account_equity=10000)
+    assert rm.drawdown_check(pd.Series([100])) is True

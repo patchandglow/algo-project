@@ -1,0 +1,41 @@
+"""Risk management. Position sizing, daily limits, drawdown kills."""
+
+import pandas as pd
+
+
+class RiskManager:
+    def __init__(self, account_equity, max_risk_per_trade=0.004,
+                 daily_loss_hard_stop=-0.025, max_drawdown_kill=0.10):
+        if account_equity <= 0:
+            raise ValueError("account_equity must be positive")
+        if not 0 < max_risk_per_trade < 1:
+            raise ValueError("max_risk_per_trade must be in (0, 1)")
+        self.account_equity = account_equity
+        self.max_risk_per_trade = max_risk_per_trade
+        self.daily_loss_hard_stop = daily_loss_hard_stop
+        self.max_drawdown_kill = max_drawdown_kill
+
+    def calculate_shares(self, entry_price, stop_price):
+        if entry_price <= 0 or stop_price <= 0:
+            return 0
+        risk_per_share = abs(entry_price - stop_price)
+        if risk_per_share == 0:
+            return 0
+        dollar_risk = self.account_equity * self.max_risk_per_trade
+        return max(int(dollar_risk / risk_per_share), 0)
+
+    def daily_loss_check(self, daily_pnl_pct):
+        if daily_pnl_pct <= self.daily_loss_hard_stop:
+            return "halt"
+        return "continue"
+
+    def drawdown_check(self, equity_curve):
+        if len(equity_curve) < 2:
+            return True
+        running_max = equity_curve.cummax()
+        current_dd = (equity_curve.iloc[-1] - running_max.iloc[-1]) / running_max.iloc[-1]
+        return bool(current_dd > -self.max_drawdown_kill)
+
+    def update_equity(self, new_equity):
+        if new_equity > 0:
+            self.account_equity = new_equity
